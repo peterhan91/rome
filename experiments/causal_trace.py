@@ -472,7 +472,7 @@ class ModelAndTokenizer:
         self.layer_names = [
             n
             for n, m in model.named_modules()
-            if (re.match(r"^(transformer|gpt_neox)\.(h|layers)\.\d+$", n))
+            if (re.match(r"^(transformer|gpt_neox|model)\.(h|layers)\.\d+$", n))
         ]
         self.num_layers = len(self.layer_names)
 
@@ -495,6 +495,12 @@ def layername(model, num, kind=None):
         if kind == "attn":
             kind = "attention"
         return f'gpt_neox.layers.{num}{"" if kind is None else "." + kind}'
+    if hasattr(model, 'model'):
+        if kind == "embed":
+            return "model.embed_tokens"
+        if kind == "attn":
+            kind = "self_attn"
+        return f'model.layers.{num}{"" if kind is None else "." + kind}'
     assert False, "unknown transformer structure"
 
 
@@ -544,43 +550,43 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
     for i in range(*result["subject_range"]):
         labels[i] = labels[i] + "*"
 
-    with plt.rc_context(rc={"font.family": "Times New Roman"}):
-        fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
-        h = ax.pcolor(
-            differences,
-            cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[
-                kind
-            ],
-            vmin=low_score,
-        )
-        ax.invert_yaxis()
-        ax.set_yticks([0.5 + i for i in range(len(differences))])
-        ax.set_xticks([0.5 + i for i in range(0, differences.shape[1] - 6, 5)])
-        ax.set_xticklabels(list(range(0, differences.shape[1] - 6, 5)))
-        ax.set_yticklabels(labels)
-        if not modelname:
-            modelname = "GPT"
-        if not kind:
-            ax.set_title("Impact of restoring state after corrupted input")
-            ax.set_xlabel(f"single restored layer within {modelname}")
-        else:
-            kindname = "MLP" if kind == "mlp" else "Attn"
-            ax.set_title(f"Impact of restoring {kindname} after corrupted input")
-            ax.set_xlabel(f"center of interval of {window} restored {kindname} layers")
-        cb = plt.colorbar(h)
-        if title is not None:
-            ax.set_title(title)
-        if xlabel is not None:
-            ax.set_xlabel(xlabel)
-        elif answer is not None:
-            # The following should be cb.ax.set_xlabel, but this is broken in matplotlib 3.5.1.
-            cb.ax.set_title(f"p({str(answer).strip()})", y=-0.16, fontsize=10)
-        if savepdf:
-            os.makedirs(os.path.dirname(savepdf), exist_ok=True)
-            plt.savefig(savepdf, bbox_inches="tight")
-            plt.close()
-        else:
-            plt.show()
+    # with plt.rc_context(rc={"font.family": "Times New Roman"}):
+    fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+    h = ax.pcolor(
+        differences,
+        cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[
+            kind
+        ],
+        vmin=low_score,
+    )
+    ax.invert_yaxis()
+    ax.set_yticks([0.5 + i for i in range(len(differences))])
+    ax.set_xticks([0.5 + i for i in range(0, differences.shape[1] - 6, 5)])
+    ax.set_xticklabels(list(range(0, differences.shape[1] - 6, 5)))
+    ax.set_yticklabels(labels)
+    if not modelname:
+        modelname = "GPT"
+    if not kind:
+        ax.set_title("Impact of restoring state after corrupted input")
+        ax.set_xlabel(f"single restored layer within {modelname}")
+    else:
+        kindname = "MLP" if kind == "mlp" else "Attn"
+        ax.set_title(f"Impact of restoring {kindname} after corrupted input")
+        ax.set_xlabel(f"center of interval of {window} restored {kindname} layers")
+    cb = plt.colorbar(h)
+    if title is not None:
+        ax.set_title(title)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    elif answer is not None:
+        # The following should be cb.ax.set_xlabel, but this is broken in matplotlib 3.5.1.
+        cb.ax.set_title(f"p({str(answer).strip()})", y=-0.16, fontsize=10)
+    if savepdf:
+        os.makedirs(os.path.dirname(savepdf), exist_ok=True)
+        plt.savefig(savepdf, bbox_inches="tight")
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_all_flow(mt, prompt, subject=None):
@@ -614,19 +620,26 @@ def decode_tokens(tokenizer, token_array):
 
 def find_token_range(tokenizer, token_array, substring):
     toks = decode_tokens(tokenizer, token_array)
-    whole_string = "".join(toks)
+    # whole_string = "".join(toks)
+    whole_string = tokenizer.decode(token_array)
     char_loc = whole_string.index(substring)
-    loc = 0
-    tok_start, tok_end = None, None
-    for i, t in enumerate(toks):
-        loc += len(t)
-        if tok_start is None and loc > char_loc:
-            tok_start = i
-        if tok_end is None and loc >= char_loc + len(substring):
-            tok_end = i + 1
-            break
-    return (tok_start, tok_end)
-
+    if toks[0] == ' ':
+        return (char_loc, char_loc + len(tokenizer.encode(substring)) - 1)
+    else:
+        return (char_loc, char_loc + len(tokenizer.encode(substring)))
+    # loc = 0
+    # tok_start, tok_end = None, None
+    # for i, t in enumerate(toks):
+    #     if t == ' ': # tokenizer of llama adds spaces
+    #         continue
+    #     loc += len(t)
+    #     if tok_start is None and loc > char_loc:
+    #         tok_start = i
+    #     if tok_end is None and loc >= char_loc + len(substring):
+    #         tok_end = i + 1
+    #         break
+    # return (tok_start, tok_end)
+    
 
 def predict_token(mt, prompts, return_p=False):
     inp = make_inputs(mt.tokenizer, prompts)
